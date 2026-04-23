@@ -4,20 +4,21 @@ import datetime
 import calendar
 import os
 import re
+import requests
+
+# Прямая ссылка на твой Excel-файл на GitHub
+EXCEL_URL = "https://github.com/OXYCODERLOLZ/FuckingSchedule/raw/main/%D0%A0%D0%B0%D1%81%D0%BF%D0%B8%D1%81%D0%B0%D0%BD%D0%B8%D0%B5_%D0%B1%D0%B0%D0%BA%D0%B0%D0%BB%D0%B0%D0%B2%D1%80%D0%B8%D0%B0%D1%82_%D0%91%D0%A2_%D0%B2%D0%B5%D1%81%D0%B5%D0%BD%D0%BD%D0%B8%D0%B9_%D1%81%D0%B5%D0%BC%D0%B5%D1%81%D1%82%D1%80_1.xlsx"
+LOCAL_FILE = "cached_schedule.xlsx"
 
 class MobileScheduleApp:
-    def __init__(self, page: ft.Page, file_path: str):
+    def __init__(self, page: ft.Page):
         self.page = page
-        self.file_path = file_path
-        
-        # Настройки мобильной страницы
         self.page.title = "Расписание ТБ-1932"
         self.page.theme_mode = ft.ThemeMode.DARK
         self.page.bgcolor = "#080808"
         self.page.padding = 0
         
         self.schedule_data = {} 
-        # 1. УСТАНАВЛИВАЕМ ТЕКУЩУЮ ДАТУ ПРИ ЗАПУСКЕ
         self.current_view_date = datetime.date.today()
         
         self.type_map = {
@@ -25,20 +26,32 @@ class MobileScheduleApp:
             r'\(Сем\)': 'Семинар', r'\(Лаб\)': 'Лаб'
         }
 
-        # Элементы интерфейса
-        self.month_label = ft.Text("", size=16, color="#4ec9b0", weight="bold", text_align=ft.TextAlign.CENTER, expand=True)
+        self.month_label = ft.Text("Загрузка данных...", size=16, color="#4ec9b0", weight="bold", text_align=ft.TextAlign.CENTER, expand=True)
         self.schedule_list = ft.ListView(expand=True, spacing=0, padding=10)
 
         self.build_ui()
-        self.load_data()
+        self.sync_and_load()
+
+    def sync_and_load(self):
+        # Попытка скачать свежий файл с Гитхаба
+        try:
+            response = requests.get(EXCEL_URL, timeout=10)
+            if response.status_code == 200:
+                with open(LOCAL_FILE, "wb") as f:
+                    f.write(response.content)
+        except Exception:
+            pass # Если нет сети, код просто продолжит работу и загрузит старый кэш
+            
+        self.load_data(LOCAL_FILE)
         self.update_view()
 
     def clean_full_type(self, text):
         if not text or str(text).lower() == "nan": return None
         t = str(text).replace('\n', ' ').strip()
         
-        # Убираем асинхронные занятия по требованию
-        if re.search(r'асинх', t, flags=re.IGNORECASE): return None
+        # Строгое исключение асинхронных занятий
+        if re.search(r'асинх', t, flags=re.IGNORECASE): 
+            return None
 
         found_type = ""
         for pattern, full_name in self.type_map.items():
@@ -47,18 +60,19 @@ class MobileScheduleApp:
                 found_type = full_name
                 break
                 
+        # Очистка имен преподавателей и номеров аудиторий для компактности
         t = re.sub(r'[А-Я][а-яё]+\s+[А-Я]\.\s+[А-Я]\.?', '', t)
         t = re.sub(r'\d{1,3}-\d[А-Я]*|кк\d{3}|ЦФК|СпортЗал|ЭИОС|каф\.|НОЦ|ФМНиИТ', '', t, flags=re.IGNORECASE)
         t = re.sub(r'\s+', ' ', t).strip()
         return f"{t} — {found_type}" if found_type else t
 
-    def load_data(self):
-        if not os.path.exists(self.file_path):
-            self.schedule_list.controls.append(ft.Text("Файл расписания не найден", color="red", size=14))
+    def load_data(self, file_path):
+        if not os.path.exists(file_path):
+            self.schedule_list.controls.append(ft.Text("Нет данных. Включите интернет для первого скачивания.", color="red", size=14))
             return
             
         try:
-            df = pd.read_excel(self.file_path, sheet_name=2, header=None)
+            df = pd.read_excel(file_path, sheet_name=2, header=None)
             h_idx = next(i for i, r in df.iterrows() if any("1932" in str(x) for x in r))
             headers = [str(c).strip() for c in df.iloc[h_idx]]
             data = df.iloc[h_idx + 1:].copy()
@@ -80,7 +94,7 @@ class MobileScheduleApp:
                     v32 = str(row.iloc[idx_32]).strip() if idx_32 is not None else ""
                     v31 = str(row.iloc[idx_31]).strip() if idx_31 is not None else ""
                     
-                    # Приоритет группе ТБ-1932
+                    # Приоритет группе 1932, общие лекции с 1931
                     content = v32 if v32 and v32.lower() != "nan" else (v31 if "(Лек)" in v31 else "")
                     
                     if content:
@@ -90,23 +104,27 @@ class MobileScheduleApp:
                             time = str(row.iloc[t_col]).split('-')[0].strip()
                             if (time, cleaned) not in day_list: day_list.append((time, cleaned))
         except Exception as e:
-            self.schedule_list.controls.append(ft.Text(f"Ошибка чтения: {str(e)}", color="red", size=14))
+            self.schedule_list.controls.append(ft.Text(f"Ошибка чтения Excel: {str(e)}", color="red", size=14))
 
-    def prev_month(self, e):
-        self.current_view_date = (self.current_view_date.replace(day=1) - datetime.timedelta(days=1))
-        self.update_view()
-
-    def next_month(self, e):
-        self.current_view_date = (self.current_view_date.replace(day=28) + datetime.timedelta(days=5)).replace(day=1)
+    def change_month(self, delta):
+        new_month = self.current_view_date.month + delta
+        year = self.current_view_date.year
+        if new_month > 12: 
+            new_month = 1
+            year += 1
+        elif new_month < 1: 
+            new_month = 12
+            year -= 1
+        self.current_view_date = datetime.date(year, new_month, 1)
         self.update_view()
 
     def build_ui(self):
         nav_row = ft.Container(
             content=ft.Row(
                 controls=[
-                    ft.IconButton(icon=ft.Icons.ARROW_BACK, on_click=self.prev_month, icon_color="white", icon_size=16),
+                    ft.IconButton(icon=ft.Icons.ARROW_BACK, on_click=lambda _: self.change_month(-1), icon_color="white", icon_size=16),
                     self.month_label,
-                    ft.IconButton(icon=ft.Icons.ARROW_FORWARD, on_click=self.next_month, icon_color="white", icon_size=16),
+                    ft.IconButton(icon=ft.Icons.ARROW_FORWARD, on_click=lambda _: self.change_month(1), icon_color="white", icon_size=16),
                 ],
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN
             ),
@@ -127,13 +145,9 @@ class MobileScheduleApp:
         days_added = 0
         for week in cal:
             for day in week:
-                # Фильтруем дни текущего месяца и исключаем воскресенья
-                if day.month != self.current_view_date.month or day.weekday() == 6: 
+                # Фильтр: показываем только текущий месяц, скрываем воскресенья и прошедшие дни
+                if day.month != self.current_view_date.month or day.weekday() == 6 or day < today: 
                     continue 
-                
-                # 2. СКРЫВАЕМ ПРОШЕДШИЕ ДНИ
-                if day < today:
-                    continue
 
                 if day in self.schedule_data:
                     days_added += 1
@@ -146,9 +160,7 @@ class MobileScheduleApp:
                     
                     subjects_ui = []
                     for time, subj in sorted(self.schedule_data[day], key=lambda x: x[0]):
-                        subjects_ui.append(
-                            ft.Text(f"• {time}  {subj}", color="#dcdcaa", size=14)
-                        )
+                        subjects_ui.append(ft.Text(f"• {time}  {subj}", color="#dcdcaa", size=14))
 
                     day_card = ft.Container(
                         bgcolor=bg_color,
@@ -175,8 +187,7 @@ class MobileScheduleApp:
         self.page.update()
 
 def main(page: ft.Page):
-    file_path = "Расписание_бакалавриат_БТ_весенний_семестр_1.xlsx"
-    app = MobileScheduleApp(page, file_path)
+    MobileScheduleApp(page)
 
 if __name__ == "__main__":
     ft.run(main)
