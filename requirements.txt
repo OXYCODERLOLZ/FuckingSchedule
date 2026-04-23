@@ -1,4 +1,0 @@
-flet
-pandas
-openpyxl
-requests
