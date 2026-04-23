@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build Flutter APK
 
 on:
   workflow_dispatch:
@@ -9,11 +9,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -26,16 +21,14 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: Install dependencies
-        run: |
-          pip install flet pandas openpyxl
+      - name: Get dependencies
+        run: flutter pub get
 
       - name: Build APK
-        run: |
-          flet build apk
+        run: flutter build apk --release
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: app-release
-          path: build/apk/**/*.apk
+          path: build/app/outputs/flutter-apk/app-release.apk
