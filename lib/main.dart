@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
-import 'package:excel/excel.dart' hide Border;
+import 'package:excel/excel.dart' hide Border; // ИСПРАВЛЕН КОНФЛИКТ ИМЕН
 import 'package:intl/intl.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'dart:io';
@@ -119,30 +119,37 @@ class _MainScreenState extends State<MainScreen> {
     var excel = Excel.decodeBytes(bytes);
     Map<DateTime, List<List<String>>> parsedData = {};
 
-    // Ищем таблицу с расписанием
-    Sheet? sheet;
-    for (var table in excel.tables.keys) {
-      sheet = excel.tables[table];
-      break; // Берем первый лист
-    }
-
-    if (sheet == null) return;
-
+    Sheet? targetSheet;
     int headerRowIdx = -1;
     List<String> headers = [];
 
-    // Ищем заголовок по наличию 1932
-    for (int i = 0; i < sheet.maxRows; i++) {
-      var row = sheet.row(i);
-      bool found = row.any((cell) => cell?.value.toString().contains('1932') ?? false);
-      if (found) {
-        headerRowIdx = i;
-        headers = row.map((c) => c?.value.toString().trim() ?? '').toList();
-        break;
-      }
+    // Универсальная выжималка текста из ячеек
+    String getCleanText(Data? cell) {
+      if (cell == null || cell.value == null) return "";
+      String s = cell.value.toString();
+      return s.replaceAll(RegExp(r'^[A-Za-z]+CellValue\(([\s\S]*)\)$'), r'\1').trim();
     }
 
-    if (headerRowIdx == -1) return;
+    // Ищем группу 1932 по ВСЕМ листам книги
+    for (var table in excel.tables.keys) {
+      var sheet = excel.tables[table]!;
+      for (int i = 0; i < sheet.maxRows; i++) {
+        var row = sheet.row(i);
+        bool found = row.any((cell) => cell?.value.toString().contains('1932') ?? false);
+        if (found) {
+          targetSheet = sheet;
+          headerRowIdx = i;
+          headers = row.map((c) => getCleanText(c)).toList();
+          break;
+        }
+      }
+      if (targetSheet != null) break;
+    }
+
+    if (targetSheet == null) {
+      setState(() { statusMessage = "Группа 1932 не найдена в таблице"; });
+      return;
+    }
 
     List<int> dateCols = [];
     for (int i = 0; i < headers.length; i++) {
@@ -152,44 +159,43 @@ class _MainScreenState extends State<MainScreen> {
     int idx32 = headers.indexWhere((h) => h.contains('1932'));
     int idx31 = headers.indexWhere((h) => h.contains('1931'));
 
-    String lastDate = "";
+    String lastDateStr = "";
 
-    for (int r = headerRowIdx + 1; r < sheet.maxRows; r++) {
-      var row = sheet.row(r);
+    for (int r = headerRowIdx + 1; r < targetSheet.maxRows; r++) {
+      var row = targetSheet.row(r);
       if (row.isEmpty) continue;
 
       for (int dc in dateCols) {
         if (dc >= row.length) continue;
 
-        String rawDate = row[dc]?.value.toString().trim() ?? "";
+        String rawDate = getCleanText(row[dc]);
+
         if (rawDate.isNotEmpty && rawDate != "null") {
-          lastDate = rawDate;
+          lastDateStr = rawDate;
         } else {
-          rawDate = lastDate;
+          rawDate = lastDateStr;
         }
 
-        var match = RegExp(r'(\d{2}\.\d{2}\.\d{2,4})').firstMatch(rawDate);
-        if (match == null) continue;
-
-        String dateStr = match.group(1)!;
         DateTime? dObj;
-        try {
-          if (dateStr.length <= 8) {
-            dObj = DateFormat("dd.MM.yy").parseStrict(dateStr);
-          } else {
-            dObj = DateFormat("dd.MM.yyyy").parseStrict(dateStr);
-          }
-        } catch (e) {
-          continue;
+        var matchRu = RegExp(r'(\d{2})\.(\d{2})\.(\d{2,4})').firstMatch(rawDate);
+        var matchEn = RegExp(r'(\d{4})-(\d{2})-(\d{2})').firstMatch(rawDate);
+
+        if (matchRu != null) {
+          int year = int.parse(matchRu.group(3)!);
+          if (year < 100) year += 2000;
+          dObj = DateTime(year, int.parse(matchRu.group(2)!), int.parse(matchRu.group(1)!));
+        } else if (matchEn != null) {
+          dObj = DateTime(int.parse(matchEn.group(1)!), int.parse(matchEn.group(2)!), int.parse(matchEn.group(3)!));
         }
+
+        if (dObj == null) continue;
 
         int tCol = dc + 1;
         if (tCol >= row.length) continue;
-        String rawTime = row[tCol]?.value.toString().trim() ?? "";
-        String time = rawTime.split('-')[0].trim();
-
-        String v32 = (idx32 != -1 && idx32 < row.length) ? (row[idx32]?.value.toString().trim() ?? "") : "";
-        String v31 = (idx31 != -1 && idx31 < row.length) ? (row[idx31]?.value.toString().trim() ?? "") : "";
+        
+        String time = getCleanText(row[tCol]).split('-')[0].trim();
+        String v32 = (idx32 != -1 && idx32 < row.length) ? getCleanText(row[idx32]) : "";
+        String v31 = (idx31 != -1 && idx31 < row.length) ? getCleanText(row[idx31]) : "";
 
         String content = "";
         if (v32.isNotEmpty && v32.toLowerCase() != "null") {
@@ -201,10 +207,9 @@ class _MainScreenState extends State<MainScreen> {
         if (content.isNotEmpty) {
           String? cleaned = cleanType(content);
           if (cleaned != null) {
-            // Нормализуем дату, отбрасывая время
             DateTime pureDate = DateTime(dObj.year, dObj.month, dObj.day);
             parsedData.putIfAbsent(pureDate, () => []);
-            // Проверка на дубликаты
+            
             bool exists = parsedData[pureDate]!.any((element) => element[0] == time && element[1] == cleaned);
             if (!exists) {
               parsedData[pureDate]!.add([time, cleaned]);
@@ -233,7 +238,7 @@ class _MainScreenState extends State<MainScreen> {
     int daysCount = DateUtils.getDaysInMonth(currentViewDate.year, currentViewDate.month);
     for (int i = 1; i <= daysCount; i++) {
       DateTime d = DateTime(currentViewDate.year, currentViewDate.month, i);
-      // Скрываем воскресенья и прошедшие дни
+      // Скрываем воскресенья и прошедшие дни (если хочешь видеть старые пары, удали "|| d.isBefore(today)")
       if (d.weekday == 7 || d.isBefore(today)) continue;
       if (scheduleData.containsKey(d)) daysInMonth.add(d);
     }
@@ -244,7 +249,6 @@ class _MainScreenState extends State<MainScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            // Навигация по месяцам
             Container(
               color: const Color(0xFF222222),
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
@@ -257,7 +261,7 @@ class _MainScreenState extends State<MainScreen> {
                   ),
                   Text(
                     isLoading ? statusMessage : DateFormat.yMMMM('ru_RU').format(currentViewDate).toUpperCase(),
-                    style: const TextStyle(color: Color(0xFF4EC9B0), fontSize: 16.0, fontWeight: FontWeight.bold), // Шрифт целое число
+                    style: const TextStyle(color: Color(0xFF4EC9B0), fontSize: 16.0, fontWeight: FontWeight.bold),
                   ),
                   IconButton(
                     icon: const Icon(Icons.arrow_forward, color: Colors.white, size: 20),
@@ -266,7 +270,6 @@ class _MainScreenState extends State<MainScreen> {
                 ],
               ),
             ),
-            // Список карточек
             Expanded(
               child: isLoading
                   ? const Center(child: CircularProgressIndicator(color: Color(0xFF4EC9B0)))
@@ -282,7 +285,6 @@ class _MainScreenState extends State<MainScreen> {
                             bool isToday = day.isAtSameMomentAs(today);
                             List<List<String>> subjects = scheduleData[day]!;
                             
-                            // Сортировка по времени
                             subjects.sort((a, b) => a[0].compareTo(b[0]));
 
                             return Container(
@@ -300,7 +302,7 @@ class _MainScreenState extends State<MainScreen> {
                                     DateFormat('dd.MM - EEEE', 'ru_RU').format(day).toUpperCase(),
                                     style: TextStyle(
                                       color: isToday ? const Color(0xFF4EC9B0) : const Color(0xFF569CD6),
-                                      fontSize: 16.0, // Шрифт целое число
+                                      fontSize: 16.0,
                                       fontWeight: FontWeight.bold,
                                     ),
                                   ),
@@ -309,7 +311,7 @@ class _MainScreenState extends State<MainScreen> {
                                         padding: const EdgeInsets.only(top: 4.0),
                                         child: Text(
                                           "• ${s[0]}  ${s[1]}",
-                                          style: const TextStyle(color: Color(0xFFDCDCAA), fontSize: 14.0), // Ширина подгоняется автоматически движком
+                                          style: const TextStyle(color: Color(0xFFDCDCAA), fontSize: 14.0),
                                         ),
                                       )),
                                 ],
