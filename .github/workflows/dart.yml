@@ -1,18 +1,34 @@
-name: schedule_app
-description: Расписание ТБ-1932
-publish_to: 'none'
-version: 1.0.0+1
+name: Build Flutter APK
 
-environment:
-  sdk: '>=3.2.0 <4.0.0'
+on:
+  workflow_dispatch: # Позволяет запускать сборку вручную кнопкой
 
-dependencies:
-  flutter:
-    sdk: flutter
-  http: ^1.2.0
-  path_provider: ^2.1.2
-  excel: ^4.0.0
-  intl: ^0.19.0
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-flutter:
-  uses-material-design: true
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Build APK
+        run: flutter build apk --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release
+          path: build/app/outputs/flutter-apk/app-release.apk
