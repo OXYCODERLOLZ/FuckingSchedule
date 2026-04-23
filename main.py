@@ -6,7 +6,6 @@ import os
 import re
 import requests
 
-# Прямая ссылка на твой Excel-файл на GitHub
 EXCEL_URL = "https://github.com/OXYCODERLOLZ/FuckingSchedule/raw/main/%D0%A0%D0%B0%D1%81%D0%BF%D0%B8%D1%81%D0%B0%D0%BD%D0%B8%D0%B5_%D0%B1%D0%B0%D0%BA%D0%B0%D0%BB%D0%B0%D0%B2%D1%80%D0%B8%D0%B0%D1%82_%D0%91%D0%A2_%D0%B2%D0%B5%D1%81%D0%B5%D0%BD%D0%BD%D0%B8%D0%B9_%D1%81%D0%B5%D0%BC%D0%B5%D1%81%D1%82%D1%80_1.xlsx"
 LOCAL_FILE = "cached_schedule.xlsx"
 
@@ -33,7 +32,6 @@ class MobileScheduleApp:
         self.sync_and_load()
 
     def sync_and_load(self):
-        # Попытка скачать свежий файл с Гитхаба
         try:
             response = requests.get(EXCEL_URL, timeout=10)
             if response.status_code == 200:
@@ -49,7 +47,6 @@ class MobileScheduleApp:
         if not text or str(text).lower() == "nan": return None
         t = str(text).replace('\n', ' ').strip()
         
-        # Строгое исключение асинхронных занятий
         if re.search(r'асинх', t, flags=re.IGNORECASE): 
             return None
 
@@ -60,7 +57,6 @@ class MobileScheduleApp:
                 found_type = full_name
                 break
                 
-        # Очистка имен преподавателей и номеров аудиторий для компактности
         t = re.sub(r'[А-Я][а-яё]+\s+[А-Я]\.\s+[А-Я]\.?', '', t)
         t = re.sub(r'\d{1,3}-\d[А-Я]*|кк\d{3}|ЦФК|СпортЗал|ЭИОС|каф\.|НОЦ|ФМНиИТ', '', t, flags=re.IGNORECASE)
         t = re.sub(r'\s+', ' ', t).strip()
@@ -94,7 +90,6 @@ class MobileScheduleApp:
                     v32 = str(row.iloc[idx_32]).strip() if idx_32 is not None else ""
                     v31 = str(row.iloc[idx_31]).strip() if idx_31 is not None else ""
                     
-                    # Приоритет группе 1932, общие лекции с 1931
                     content = v32 if v32 and v32.lower() != "nan" else (v31 if "(Лек)" in v31 else "")
                     
                     if content:
