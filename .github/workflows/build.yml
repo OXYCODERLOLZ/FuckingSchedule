@@ -1,7 +1,7 @@
 name: Build Android APK
 
 on:
-  workflow_dispatch: # Позволяет запускать сборку вручную кнопкой
+  workflow_dispatch:
 
 jobs:
   build:
@@ -32,8 +32,7 @@ jobs:
 
       - name: Build APK
         run: |
-          # Флаг --asset-dir . принудительно упаковывает твой Excel внутрь приложения
-          flet build apk --asset-dir .
+          flet build apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
