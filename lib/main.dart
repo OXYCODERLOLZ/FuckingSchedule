@@ -1,13 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import 'package:path_provider/path_provider.dart';
-import 'package:excel/excel.dart' hide Border; // ИСПРАВЛЕН КОНФЛИКТ ИМЕН
+import 'package:flutter/services.dart' show rootBundle;
+import 'package:excel/excel.dart' hide Border;
 import 'package:intl/intl.dart';
 import 'package:intl/date_symbol_data_local.dart';
-import 'dart:io';
-
-const String excelUrl =
-    "https://github.com/OXYCODERLOLZ/FuckingSchedule/raw/main/%D0%A0%D0%B0%D1%81%D0%BF%D0%B8%D1%81%D0%B0%D0%BD%D0%B8%D0%B5_%D0%B1%D0%B0%D0%BA%D0%B0%D0%BB%D0%B0%D0%B2%D1%80%D0%B8%D0%B0%D1%82_%D0%91%D0%A2_%D0%B2%D0%B5%D1%81%D0%B5%D0%BD%D0%BD%D0%B8%D0%B9_%D1%81%D0%B5%D0%BC%D0%B5%D1%81%D1%82%D1%80_1.xlsx";
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -42,52 +37,132 @@ class MainScreen extends StatefulWidget {
 class _MainScreenState extends State<MainScreen> {
   Map<DateTime, List<List<String>>> scheduleData = {};
   DateTime currentViewDate = DateTime.now();
-  String statusMessage = "Синхронизация...";
+  String statusMessage = "Распаковка расписания...";
   bool isLoading = true;
 
   @override
   void initState() {
     super.initState();
-    syncAndLoad();
+    loadLocalExcel();
   }
 
-  Future<void> syncAndLoad() async {
-    setState(() {
-      isLoading = true;
-      statusMessage = "Загрузка данных...";
-    });
-
+  Future<void> loadLocalExcel() async {
     try {
-      final directory = await getApplicationDocumentsDirectory();
-      final filePath = '${directory.path}/cached_schedule.xlsx';
-      final file = File(filePath);
+      // Читаем файл, зашитый прямо в приложение!
+      final data = await rootBundle.load('assets/schedule.xlsx');
+      final bytes = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
+      var excel = Excel.decodeBytes(bytes);
+      
+      Map<DateTime, List<List<String>>> parsedData = {};
+      Sheet? targetSheet;
+      int headerRowIdx = -1;
+      List<String> headers = [];
 
-      // 1. Попытка скачать свежий файл (ждем максимум 7 секунд)
-      try {
-        final response = await http.get(Uri.parse(excelUrl)).timeout(const Duration(seconds: 7));
-        if (response.statusCode == 200) {
-          await file.writeAsBytes(response.bodyBytes);
-          print("Файл обновлен с GitHub");
+      String getCleanText(Data? cell) {
+        if (cell == null || cell.value == null) return "";
+        String s = cell.value.toString();
+        return s.replaceAll(RegExp(r'^[A-Za-z]+CellValue\(([\s\S]*)\)$'), r'\1').trim();
+      }
+
+      // Ищем группу 1932 по всем листам
+      for (var table in excel.tables.keys) {
+        var sheet = excel.tables[table]!;
+        for (int i = 0; i < sheet.maxRows; i++) {
+          var row = sheet.row(i);
+          bool found = row.any((cell) => cell?.value.toString().contains('1932') ?? false);
+          if (found) {
+            targetSheet = sheet;
+            headerRowIdx = i;
+            headers = row.map((c) => getCleanText(c)).toList();
+            break;
+          }
         }
-      } catch (e) {
-        print("Нет сети, используем локальный кэш: $e");
+        if (targetSheet != null) break;
       }
 
-      // 2. Чтение файла
-      if (await file.exists()) {
-        await parseExcel(file);
-      } else {
+      if (targetSheet == null) {
         setState(() {
-          statusMessage = "Нет данных. Нужен интернет для первого запуска.";
+          statusMessage = "Группа 1932 не найдена в файле";
+          isLoading = false;
         });
+        return;
       }
-    } catch (e) {
-      print("Критическая ошибка: $e");
+
+      List<int> dateCols = [];
+      for (int i = 0; i < headers.length; i++) {
+        if (headers[i].contains('Дата')) dateCols.add(i);
+      }
+
+      int idx32 = headers.indexWhere((h) => h.contains('1932'));
+      int idx31 = headers.indexWhere((h) => h.contains('1931'));
+
+      String lastDateStr = "";
+
+      for (int r = headerRowIdx + 1; r < targetSheet.maxRows; r++) {
+        var row = targetSheet.row(r);
+        if (row.isEmpty) continue;
+
+        for (int dc in dateCols) {
+          if (dc >= row.length) continue;
+
+          String rawDate = getCleanText(row[dc]);
+          if (rawDate.isNotEmpty && rawDate != "null") {
+            lastDateStr = rawDate;
+          } else {
+            rawDate = lastDateStr;
+          }
+
+          DateTime? dObj;
+          var matchRu = RegExp(r'(\d{2})\.(\d{2})\.(\d{2,4})').firstMatch(rawDate);
+          var matchEn = RegExp(r'(\d{4})-(\d{2})-(\d{2})').firstMatch(rawDate);
+
+          if (matchRu != null) {
+            int year = int.parse(matchRu.group(3)!);
+            if (year < 100) year += 2000;
+            dObj = DateTime(year, int.parse(matchRu.group(2)!), int.parse(matchRu.group(1)!));
+          } else if (matchEn != null) {
+            dObj = DateTime(int.parse(matchEn.group(1)!), int.parse(matchEn.group(2)!), int.parse(matchEn.group(3)!));
+          }
+
+          if (dObj == null) continue;
+
+          int tCol = dc + 1;
+          if (tCol >= row.length) continue;
+          
+          String time = getCleanText(row[tCol]).split('-')[0].trim();
+          String v32 = (idx32 != -1 && idx32 < row.length) ? getCleanText(row[idx32]) : "";
+          String v31 = (idx31 != -1 && idx31 < row.length) ? getCleanText(row[idx31]) : "";
+
+          String content = "";
+          if (v32.isNotEmpty && v32.toLowerCase() != "null") {
+            content = v32;
+          } else if (v31.contains("(Лек)")) {
+            content = v31;
+          }
+
+          if (content.isNotEmpty) {
+            String? cleaned = cleanType(content);
+            if (cleaned != null) {
+              DateTime pureDate = DateTime(dObj.year, dObj.month, dObj.day);
+              parsedData.putIfAbsent(pureDate, () => []);
+              
+              bool exists = parsedData[pureDate]!.any((element) => element[0] == time && element[1] == cleaned);
+              if (!exists) {
+                parsedData[pureDate]!.add([time, cleaned]);
+              }
+            }
+          }
+        }
+      }
+
       setState(() {
-        statusMessage = "Ошибка загрузки";
+        scheduleData = parsedData;
+        isLoading = false;
       });
-    } finally {
+
+    } catch (e) {
       setState(() {
+        statusMessage = "Ошибка чтения локального файла";
         isLoading = false;
       });
     }
@@ -97,7 +172,6 @@ class _MainScreenState extends State<MainScreen> {
     if (text == null || text.trim().isEmpty || text.toLowerCase() == 'nan') return null;
     String t = text.replaceAll('\n', ' ').trim();
 
-    // ЖЕСТКО УБИРАЕМ АСИНХРОННЫЕ
     if (t.toLowerCase().contains('асинх')) return null;
 
     String foundType = "";
@@ -107,121 +181,11 @@ class _MainScreenState extends State<MainScreen> {
     if (t.contains(RegExp(r'\(Лаб\)', caseSensitive: false))) foundType = "Лаб";
 
     t = t.replaceAll(RegExp(r'\((Лек|Пр|Сем|Лаб)\)', caseSensitive: false), '');
-    t = t.replaceAll(RegExp(r'[А-Я][а-яё]+\s+[А-Я]\.\s+[А-Я]\.?'), ''); // Преподы
+    t = t.replaceAll(RegExp(r'[А-Я][а-яё]+\s+[А-Я]\.\s+[А-Я]\.?'), ''); 
     t = t.replaceAll(RegExp(r'\d{1,3}-\d[А-Я]*|кк\d{3}|ЦФК|СпортЗал|ЭИОС|каф\.|НОЦ|ФМНиИТ', caseSensitive: false), '');
     t = t.replaceAll(RegExp(r'\s+'), ' ').trim();
 
     return foundType.isNotEmpty ? "$t — $foundType" : t;
-  }
-
-  Future<void> parseExcel(File file) async {
-    var bytes = file.readAsBytesSync();
-    var excel = Excel.decodeBytes(bytes);
-    Map<DateTime, List<List<String>>> parsedData = {};
-
-    Sheet? targetSheet;
-    int headerRowIdx = -1;
-    List<String> headers = [];
-
-    // Универсальная выжималка текста из ячеек
-    String getCleanText(Data? cell) {
-      if (cell == null || cell.value == null) return "";
-      String s = cell.value.toString();
-      return s.replaceAll(RegExp(r'^[A-Za-z]+CellValue\(([\s\S]*)\)$'), r'\1').trim();
-    }
-
-    // Ищем группу 1932 по ВСЕМ листам книги
-    for (var table in excel.tables.keys) {
-      var sheet = excel.tables[table]!;
-      for (int i = 0; i < sheet.maxRows; i++) {
-        var row = sheet.row(i);
-        bool found = row.any((cell) => cell?.value.toString().contains('1932') ?? false);
-        if (found) {
-          targetSheet = sheet;
-          headerRowIdx = i;
-          headers = row.map((c) => getCleanText(c)).toList();
-          break;
-        }
-      }
-      if (targetSheet != null) break;
-    }
-
-    if (targetSheet == null) {
-      setState(() { statusMessage = "Группа 1932 не найдена в таблице"; });
-      return;
-    }
-
-    List<int> dateCols = [];
-    for (int i = 0; i < headers.length; i++) {
-      if (headers[i].contains('Дата')) dateCols.add(i);
-    }
-
-    int idx32 = headers.indexWhere((h) => h.contains('1932'));
-    int idx31 = headers.indexWhere((h) => h.contains('1931'));
-
-    String lastDateStr = "";
-
-    for (int r = headerRowIdx + 1; r < targetSheet.maxRows; r++) {
-      var row = targetSheet.row(r);
-      if (row.isEmpty) continue;
-
-      for (int dc in dateCols) {
-        if (dc >= row.length) continue;
-
-        String rawDate = getCleanText(row[dc]);
-
-        if (rawDate.isNotEmpty && rawDate != "null") {
-          lastDateStr = rawDate;
-        } else {
-          rawDate = lastDateStr;
-        }
-
-        DateTime? dObj;
-        var matchRu = RegExp(r'(\d{2})\.(\d{2})\.(\d{2,4})').firstMatch(rawDate);
-        var matchEn = RegExp(r'(\d{4})-(\d{2})-(\d{2})').firstMatch(rawDate);
-
-        if (matchRu != null) {
-          int year = int.parse(matchRu.group(3)!);
-          if (year < 100) year += 2000;
-          dObj = DateTime(year, int.parse(matchRu.group(2)!), int.parse(matchRu.group(1)!));
-        } else if (matchEn != null) {
-          dObj = DateTime(int.parse(matchEn.group(1)!), int.parse(matchEn.group(2)!), int.parse(matchEn.group(3)!));
-        }
-
-        if (dObj == null) continue;
-
-        int tCol = dc + 1;
-        if (tCol >= row.length) continue;
-        
-        String time = getCleanText(row[tCol]).split('-')[0].trim();
-        String v32 = (idx32 != -1 && idx32 < row.length) ? getCleanText(row[idx32]) : "";
-        String v31 = (idx31 != -1 && idx31 < row.length) ? getCleanText(row[idx31]) : "";
-
-        String content = "";
-        if (v32.isNotEmpty && v32.toLowerCase() != "null") {
-          content = v32;
-        } else if (v31.contains("(Лек)")) {
-          content = v31;
-        }
-
-        if (content.isNotEmpty) {
-          String? cleaned = cleanType(content);
-          if (cleaned != null) {
-            DateTime pureDate = DateTime(dObj.year, dObj.month, dObj.day);
-            parsedData.putIfAbsent(pureDate, () => []);
-            
-            bool exists = parsedData[pureDate]!.any((element) => element[0] == time && element[1] == cleaned);
-            if (!exists) {
-              parsedData[pureDate]!.add([time, cleaned]);
-            }
-          }
-        }
-      }
-    }
-
-    setState(() {
-      scheduleData = parsedData;
-    });
   }
 
   void changeMonth(int delta) {
@@ -238,7 +202,6 @@ class _MainScreenState extends State<MainScreen> {
     int daysCount = DateUtils.getDaysInMonth(currentViewDate.year, currentViewDate.month);
     for (int i = 1; i <= daysCount; i++) {
       DateTime d = DateTime(currentViewDate.year, currentViewDate.month, i);
-      // Скрываем воскресенья и прошедшие дни (если хочешь видеть старые пары, удали "|| d.isBefore(today)")
       if (d.weekday == 7 || d.isBefore(today)) continue;
       if (scheduleData.containsKey(d)) daysInMonth.add(d);
     }
