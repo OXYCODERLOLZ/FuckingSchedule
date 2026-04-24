@@ -16,7 +16,7 @@ class ScheduleApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Расписание ТБ-1932',
+      title: 'Планировщик ТБ-1932',
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark().copyWith(
         scaffoldBackgroundColor: const Color(0xFF080808),
@@ -37,7 +37,7 @@ class MainScreen extends StatefulWidget {
 class _MainScreenState extends State<MainScreen> {
   Map<DateTime, List<List<String>>> scheduleData = {};
   DateTime currentViewDate = DateTime.now();
-  String statusMessage = "Распаковка расписания...";
+  String statusMessage = "Загрузка локального файла...";
   bool isLoading = true;
 
   @override
@@ -48,7 +48,6 @@ class _MainScreenState extends State<MainScreen> {
 
   Future<void> loadLocalExcel() async {
     try {
-      // Читаем файл, зашитый прямо в приложение!
       final data = await rootBundle.load('assets/schedule.xlsx');
       final bytes = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
       var excel = Excel.decodeBytes(bytes);
@@ -64,7 +63,6 @@ class _MainScreenState extends State<MainScreen> {
         return s.replaceAll(RegExp(r'^[A-Za-z]+CellValue\(([\s\S]*)\)$'), r'\1').trim();
       }
 
-      // Ищем группу 1932 по всем листам
       for (var table in excel.tables.keys) {
         var sheet = excel.tables[table]!;
         for (int i = 0; i < sheet.maxRows; i++) {
@@ -82,7 +80,7 @@ class _MainScreenState extends State<MainScreen> {
 
       if (targetSheet == null) {
         setState(() {
-          statusMessage = "Группа 1932 не найдена в файле";
+          statusMessage = "Группа 1932 не найдена";
           isLoading = false;
         });
         return;
@@ -114,14 +112,10 @@ class _MainScreenState extends State<MainScreen> {
 
           DateTime? dObj;
           var matchRu = RegExp(r'(\d{2})\.(\d{2})\.(\d{2,4})').firstMatch(rawDate);
-          var matchEn = RegExp(r'(\d{4})-(\d{2})-(\d{2})').firstMatch(rawDate);
-
           if (matchRu != null) {
             int year = int.parse(matchRu.group(3)!);
             if (year < 100) year += 2000;
             dObj = DateTime(year, int.parse(matchRu.group(2)!), int.parse(matchRu.group(1)!));
-          } else if (matchEn != null) {
-            dObj = DateTime(int.parse(matchEn.group(1)!), int.parse(matchEn.group(2)!), int.parse(matchEn.group(3)!));
           }
 
           if (dObj == null) continue;
@@ -133,21 +127,14 @@ class _MainScreenState extends State<MainScreen> {
           String v32 = (idx32 != -1 && idx32 < row.length) ? getCleanText(row[idx32]) : "";
           String v31 = (idx31 != -1 && idx31 < row.length) ? getCleanText(row[idx31]) : "";
 
-          String content = "";
-          if (v32.isNotEmpty && v32.toLowerCase() != "null") {
-            content = v32;
-          } else if (v31.contains("(Лек)")) {
-            content = v31;
-          }
+          String content = v32.isNotEmpty && v32.toLowerCase() != "null" ? v32 : (v31.contains("(Лек)") ? v31 : "");
 
           if (content.isNotEmpty) {
             String? cleaned = cleanType(content);
             if (cleaned != null) {
               DateTime pureDate = DateTime(dObj.year, dObj.month, dObj.day);
               parsedData.putIfAbsent(pureDate, () => []);
-              
-              bool exists = parsedData[pureDate]!.any((element) => element[0] == time && element[1] == cleaned);
-              if (!exists) {
+              if (!parsedData[pureDate]!.any((e) => e[0] == time && e[1] == cleaned)) {
                 parsedData[pureDate]!.add([time, cleaned]);
               }
             }
@@ -162,7 +149,7 @@ class _MainScreenState extends State<MainScreen> {
 
     } catch (e) {
       setState(() {
-        statusMessage = "Ошибка чтения локального файла";
+        statusMessage = "Ошибка файла";
         isLoading = false;
       });
     }
@@ -171,7 +158,6 @@ class _MainScreenState extends State<MainScreen> {
   String? cleanType(String? text) {
     if (text == null || text.trim().isEmpty || text.toLowerCase() == 'nan') return null;
     String t = text.replaceAll('\n', ' ').trim();
-
     if (t.toLowerCase().contains('асинх')) return null;
 
     String foundType = "";
@@ -183,9 +169,7 @@ class _MainScreenState extends State<MainScreen> {
     t = t.replaceAll(RegExp(r'\((Лек|Пр|Сем|Лаб)\)', caseSensitive: false), '');
     t = t.replaceAll(RegExp(r'[А-Я][а-яё]+\s+[А-Я]\.\s+[А-Я]\.?'), ''); 
     t = t.replaceAll(RegExp(r'\d{1,3}-\d[А-Я]*|кк\d{3}|ЦФК|СпортЗал|ЭИОС|каф\.|НОЦ|ФМНиИТ', caseSensitive: false), '');
-    t = t.replaceAll(RegExp(r'\s+'), ' ').trim();
-
-    return foundType.isNotEmpty ? "$t — $foundType" : t;
+    return t.replaceAll(RegExp(r'\s+'), ' ').trim() + (foundType.isNotEmpty ? " — $foundType" : "");
   }
 
   void changeMonth(int delta) {
@@ -196,13 +180,15 @@ class _MainScreenState extends State<MainScreen> {
 
   @override
   Widget build(BuildContext context) {
-    DateTime today = DateTime(DateTime.now().year, DateTime.now().month, DateTime.now().day);
+    DateTime now = DateTime.now();
+    DateTime today = DateTime(now.year, now.month, now.day);
     List<DateTime> daysInMonth = [];
     
     int daysCount = DateUtils.getDaysInMonth(currentViewDate.year, currentViewDate.month);
     for (int i = 1; i <= daysCount; i++) {
       DateTime d = DateTime(currentViewDate.year, currentViewDate.month, i);
-      if (d.weekday == 7 || d.isBefore(today)) continue;
+      // Оставляем только фильтр воскресений. Прошедшие дни теперь ПОКАЗЫВАЮТСЯ.
+      if (d.weekday == 7) continue;
       if (scheduleData.containsKey(d)) daysInMonth.add(d);
     }
 
@@ -237,9 +223,7 @@ class _MainScreenState extends State<MainScreen> {
               child: isLoading
                   ? const Center(child: CircularProgressIndicator(color: Color(0xFF4EC9B0)))
                   : daysInMonth.isEmpty
-                      ? const Center(
-                          child: Text("Актуальных пар в этом месяце нет",
-                              style: TextStyle(color: Color(0xFF888888), fontSize: 16.0)))
+                      ? const Center(child: Text("Занятий не найдено", style: TextStyle(color: Colors.grey, fontSize: 16.0)))
                       : ListView.builder(
                           padding: const EdgeInsets.all(10),
                           itemCount: daysInMonth.length,
@@ -247,7 +231,6 @@ class _MainScreenState extends State<MainScreen> {
                             DateTime day = daysInMonth[index];
                             bool isToday = day.isAtSameMomentAs(today);
                             List<List<String>> subjects = scheduleData[day]!;
-                            
                             subjects.sort((a, b) => a[0].compareTo(b[0]));
 
                             return Container(
