@@ -37,7 +37,7 @@ class MainScreen extends StatefulWidget {
 class _MainScreenState extends State<MainScreen> {
   Map<DateTime, List<List<String>>> scheduleData = {};
   DateTime currentViewDate = DateTime.now();
-  String statusMessage = "Загрузка локального файла...";
+  String statusMessage = "Распаковка расписания...";
   bool isLoading = true;
 
   @override
@@ -91,10 +91,8 @@ class _MainScreenState extends State<MainScreen> {
         if (headers[i].contains('Дата')) dateCols.add(i);
       }
 
-      int idx32 = headers.indexWhere((h) => h.contains('1932'));
-      int idx31 = headers.indexWhere((h) => h.contains('1931'));
-
-      String lastDateStr = "";
+      // ИСПРАВЛЕНИЕ 1: Отдельная память для дат каждой колонки, чтобы недели не смешивались
+      Map<int, String> lastDateForColumn = {};
 
       for (int r = headerRowIdx + 1; r < targetSheet.maxRows; r++) {
         var row = targetSheet.row(r);
@@ -105,17 +103,21 @@ class _MainScreenState extends State<MainScreen> {
 
           String rawDate = getCleanText(row[dc]);
           if (rawDate.isNotEmpty && rawDate != "null") {
-            lastDateStr = rawDate;
+            lastDateForColumn[dc] = rawDate;
           } else {
-            rawDate = lastDateStr;
+            rawDate = lastDateForColumn[dc] ?? "";
           }
 
           DateTime? dObj;
           var matchRu = RegExp(r'(\d{2})\.(\d{2})\.(\d{2,4})').firstMatch(rawDate);
+          var matchEn = RegExp(r'(\d{4})-(\d{2})-(\d{2})').firstMatch(rawDate);
+
           if (matchRu != null) {
             int year = int.parse(matchRu.group(3)!);
             if (year < 100) year += 2000;
             dObj = DateTime(year, int.parse(matchRu.group(2)!), int.parse(matchRu.group(1)!));
+          } else if (matchEn != null) {
+            dObj = DateTime(int.parse(matchEn.group(1)!), int.parse(matchEn.group(2)!), int.parse(matchEn.group(3)!));
           }
 
           if (dObj == null) continue;
@@ -123,6 +125,15 @@ class _MainScreenState extends State<MainScreen> {
           int tCol = dc + 1;
           if (tCol >= row.length) continue;
           
+          // ИСПРАВЛЕНИЕ 2: Ищем колонку группы строго внутри текущей недели
+          int idx32 = -1;
+          int idx31 = -1;
+          for (int j = dc + 1; j < headers.length; j++) {
+            if (headers[j].contains('Дата')) break; // Стоп, если началась следующая неделя
+            if (headers[j].contains('1932')) idx32 = j;
+            if (headers[j].contains('1931')) idx31 = j;
+          }
+
           String time = getCleanText(row[tCol]).split('-')[0].trim();
           String v32 = (idx32 != -1 && idx32 < row.length) ? getCleanText(row[idx32]) : "";
           String v31 = (idx31 != -1 && idx31 < row.length) ? getCleanText(row[idx31]) : "";
@@ -149,7 +160,7 @@ class _MainScreenState extends State<MainScreen> {
 
     } catch (e) {
       setState(() {
-        statusMessage = "Ошибка файла";
+        statusMessage = "Ошибка чтения файла";
         isLoading = false;
       });
     }
@@ -158,6 +169,7 @@ class _MainScreenState extends State<MainScreen> {
   String? cleanType(String? text) {
     if (text == null || text.trim().isEmpty || text.toLowerCase() == 'nan') return null;
     String t = text.replaceAll('\n', ' ').trim();
+    
     if (t.toLowerCase().contains('асинх')) return null;
 
     String foundType = "";
@@ -187,8 +199,7 @@ class _MainScreenState extends State<MainScreen> {
     int daysCount = DateUtils.getDaysInMonth(currentViewDate.year, currentViewDate.month);
     for (int i = 1; i <= daysCount; i++) {
       DateTime d = DateTime(currentViewDate.year, currentViewDate.month, i);
-      // Оставляем только фильтр воскресений. Прошедшие дни теперь ПОКАЗЫВАЮТСЯ.
-      if (d.weekday == 7) continue;
+      if (d.weekday == 7) continue; 
       if (scheduleData.containsKey(d)) daysInMonth.add(d);
     }
 
